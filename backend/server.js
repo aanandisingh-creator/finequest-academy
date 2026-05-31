@@ -1,88 +1,75 @@
 const express = require('express');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const FacebookStrategy = require('passport-facebook').Strategy;
+const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 
 const app = express();
-app.use(cors());
+
+app.use(cors({ origin: 'http://localhost:5173' }));
 app.use(express.json());
+app.use(passport.initialize());
 
-// Initialize SQLite database file in your backend folder
-const dbPath = path.join(__dirname, 'finquest.db');
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) console.error('Database connection error:', err);
-    else console.log('Connected safely to SQLite database!');
+// ==========================================
+// 1. GOOGLE STRATEGY
+// ==========================================
+passport.use(new GoogleStrategy({
+    clientID: "510547982696-9ffgl7thp7gq30v91ng9loqp7eqt8ial.apps.googleusercontent.com",
+    clientSecret: "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",
+    callbackURL: "http://localhost:5000/api/auth/google/callback"
+  },
+  function(accessToken, refreshToken, profile, done) {
+    const user = { email: profile.emails[0].value, username: profile.displayName };
+    return done(null, user);
+  }
+));
+
+// ==========================================
+// 2. FACEBOOK STRATEGY
+// ==========================================
+passport.use(new FacebookStrategy({
+    clientID: "PASTE_YOUR_FACEBOOK_APP_ID_HERE", // Update this when Facebook verification finishes!
+    clientSecret: "PASTE_YOUR_FACEBOOK_APP_SECRET_HERE", // Update this when Facebook verification finishes!
+    callbackURL: "http://localhost:5000/api/auth/facebook/callback",
+    profileFields: ['id', 'displayName', 'emails']
+  },
+  function(accessToken, refreshToken, profile, done) {
+    const user = { 
+      email: profile.emails ? profile.emails[0].value : `${profile.id}@facebook.com`, 
+      username: profile.displayName 
+    };
+    return done(null, user);
+  }
+));
+
+// ==========================================
+// 3. AUTHENTICATION ROUTE ENTRY POINTS
+// ==========================================
+app.get('/api/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+app.get('/api/auth/facebook', passport.authenticate('facebook', { scope: ['email'] }));
+
+// ==========================================
+// 4. AUTHENTICATION CALLBACK HANDSHAKES
+// ==========================================
+app.get('/api/auth/google/callback', 
+  passport.authenticate('google', { session: false, failureRedirect: 'http://localhost:5173' }),
+  function(req, res) {
+    const token = jwt.sign({ user: req.user }, 'FinQuestMageSuperSecureTokenKey_987!', { expiresIn: '2h' });
+    res.redirect(`http://localhost:5173?token=${token}`);
+  }
+);
+
+app.get('/api/auth/facebook/callback',
+  passport.authenticate('facebook', { session: false, failureRedirect: 'http://localhost:5173' }),
+  function(req, res) {
+    const token = jwt.sign({ user: req.user }, 'FinQuestMageSuperSecureTokenKey_987!', { expiresIn: '2h' });
+    res.redirect(`http://localhost:5173?token=${token}`);
+  }
+);
+
+app.get('/', (req, res) => {
+  res.send('FinQuest Core Backend API Engine is Online!');
 });
 
-// Create tables automatically if they don't exist yet
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS user_profile (
-        id INTEGER PRIMARY KEY,
-        username TEXT,
-        level INTEGER,
-        xp INTEGER,
-        streak INTEGER,
-        walletBalance REAL
-    )`);
-
-    // Insert our starter profile "Alex_Saver" if the database is completely fresh
-    db.get("SELECT * FROM user_profile WHERE id = 1", (err, row) => {
-        if (!row) {
-            db.run(`INSERT INTO user_profile (id, username, level, xp, streak, walletBalance) 
-                    VALUES (1, 'Alex_Saver', 1, 120, 4, 250.00)`);
-        }
-    });
-});
-
-// API route to get user data from the database
-app.get('/api/user', (req, res) => {
-    db.get("SELECT * FROM user_profile WHERE id = 1", (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(row);
-    });
-});
-
-// API route to handle transactions and update the database permanently
-app.post('/api/expense', async (req, res) => {
-    const { text, amount } = req.body;
-
-    try {
-        // Send data to Python AI server
-        const aiResponse = await axios.post('http://127.0.0.1:8000/predict', { text, amount });
-        const { category, game_message, xp_reward } = aiResponse.data;
-
-        // Fetch current user data from database to perform math calculations
-        db.get("SELECT * FROM user_profile WHERE id = 1", (err, user) => {
-            if (err || !user) return res.status(500).json({ error: "User records missing." });
-
-            let newBalance = user.walletBalance - amount;
-            let newXp = user.xp + xp_reward;
-            let newLevel = user.level;
-
-            // Level up algorithm (Every 200 XP increases user level)
-            if (newXp >= 200) {
-                newXp = newXp - 200;
-                newLevel += 1;
-            }
-
-            // Save calculated changes permanently inside database file
-            db.run(`UPDATE user_profile SET walletBalance = ?, xp = ?, level = ? WHERE id = 1`,
-                [newBalance, newXp, newLevel],
-                function(updateErr) {
-                    if (updateErr) return res.status(500).json({ error: "Failed to write database." });
-                    
-                    // Return fresh updated state back to React frontend screen
-                    res.json({
-                        message: game_message,
-                        user: { id: 1, username: user.username, level: newLevel, xp: newXp, streak: user.streak, walletBalance: newBalance }
-                    });
-                }
-            );
-        });
-    } catch (error) {
-        res.status(500).json({ error: "Internal server error connecting to processing models." });
-    }
-});
-
-app.listen(5000, () => console.log('Server listening natively on port 5000 with Database enabled'));
+app.listen(5000, () => console.log('Server engine running on port 5000'));
